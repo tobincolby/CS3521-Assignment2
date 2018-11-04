@@ -2,6 +2,7 @@ import socket
 import threading, sys
 import datetime, time, json
 from enum import Enum
+import sys
 
 class PacketType(Enum):
     HEARTBEAT_REQ = 0
@@ -33,24 +34,18 @@ def create_packet(packet_type, message=None):
     packet_data = json.dumps(packet)
     return packet_data
 
-
-
-if not len(sys.argv) == 6:
-    exit()
-
-name = sys.argv[1]
-local_port = sys.argv[2]
-pocAddress = sys.argv[3]
-pocPort = sys.argv[4]
-maxConnections = sys.argv[5]
+my_name = ''
+my_port = -1
+pocAddress = ''
+pocPort = 0
+maxConnections = 0
 connections = dict() # Key: Server Name, Value: (IP, Port)
 rTTTimes = dict() # Key: (IP, Port) value: RTT
 connectedSums = dict() # Key: (IP, Port) Value: Sum
 
 hubNode = None
-client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-my_address = (client_socket.getsockname(), local_port)
-
+client_socket = None
+my_address = (0,0)
 
 
 
@@ -198,44 +193,120 @@ class RTTThread(threading.Thread):
                 sendSumThread.start()
             time.sleep(4.5)
 
+def connect_to_poc(PoC_address, PoC_port):
+    #this function contacts the poc and receives all of the information
+    #about the other active nodes
 
-message = input("Star-Node Command: ")
+    #send a CONNECT_REQ packet to PoC
+    #i get an error when actually using the PacketType enum so I am using
+    #just a string to represent the packet type
+    connect_req_packet = create_packet(PacketType.CONNECT_REQ)
+    client_socket.sendto(connect_req_packet, (PoC_address, PoC_port))
+    client_socket.bind(("", my_port))
+    response = client_socket.recv(65507)
 
-while not message == 'disconnect':
+    #--------------------
+    #TODO: handle response. add all connections to global dict
+    #--------------------
 
-    if message == 'show-status':
-        print("Status ================")
-        for x in connections:
-            print(x + " : " + connections[x] + " : " + rTTTimes[connections[x]])
+def connect_to_network():
+    #this function goes through the list of active connections and
+    #exchanges contact info with all of them so that the whole network is aware
+    #that this node is alive now
+    #------------------------------
+    #TODO: make sure this is correct
+    #------------------------------
+    for connection in connections:
+        connect_req_packet = create_packet(PacketType.CONNECT_REQ)
+        addr = connections[connection]
+        client_socket.sendto(connect_req_packet, addr)
+        #dont really need to do anything with the response just make sure that
+        #there actually was one
 
-        print("Hub Node: ")
-        for x in connections:
-            if connections[x] == hubNode:
-                print(x)
-                break
-    elif 'send' in message:
-        # sending data logic
+def main():
+    #remember to uncomment the my_address
+    #command line looks like this: star-node <name> <local-port> <PoC-address> <PoC-port> <N>
+    my_name = sys.argv[1]
+    my_port = sys.argv[2]
+    poc_address = sys.argv[3]
+    poc_port = sys.argv[4]
+    maxConnections = sys.argv[5]
 
-        info = message.split(" ")[1]
-        if hubNode is None:
-            addresses = rTTTimes.keys()
-        else:
-            addresses = [hubNode]
-        if "\"" in info:
-            parsed_message = str(info[1:-1]).encode('utf-8')
+    client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    my_address = (client_socket.getsockname(), my_port)
 
-            messageThread = SendMessageThread(0, 'Send Message', parsed_message, addresses)
-            messageThread.start()
-        else:
-            file = open(info, "rb")
-            file_data = file.read()
-            file.close()
+    #first we try to connect to the POC
+    if (pocAddress == 0):
+        #-----------TODO------------------------
+        #then this node does not have a PoC so we should just keep running
+        #until another node connects to us
+        #---------------------------------------
+        print("TODO")
+    else:
+        connect_to_poc(poc_address, poc_port)
 
-            fileSendThread = SendFileThread(0, 'Send File', file_data, addresses)
+        #if that succeeds then we should have all of the active connections
+        #in the network given to us by the poc so lets connect to all of them
+        connect_to_network()
 
-    elif 'show-log':
-        print("Log")
+        #now everyone is aware that this node is alive so we have completed
+        #peer discovery phase. We can now start calculating RTT and find the
+        #hub node
+
+    #----------------------------------
+    #TODO: do RTT stuff and find hub
+    #----------------------------------
+    rttThread = RTTThread(11, "rttThread")
+    rttThread.start()
 
 
-    message = input("Star-Node Command: ")
+    #---------------------------------------------------------------------
+    #TODO:
+    #we have now found the hub and formed the network
+    #we now have to be able to send/receive messages, do RTT measurements,
+    #Heartbeat stuff, and handle commands by the user
+    #---------------------------------------------------------------------
+    command = input("Star-Node Command: ")
 
+    while not command == 'disconnect':
+
+        if command == 'show-status':
+            print("Status ================")
+            for x in connections:
+                print(x + " : " + connections[x] + " : " + rTTTimes[connections[x]])
+
+            print("Hub Node: ")
+            for x in connections:
+                if connections[x] == hubNode:
+                    print(x)
+                    break
+        elif 'send' in command:
+            # sending data logic
+
+            info = command.split(" ")[1]
+            if hubNode is None:
+                addresses = rTTTimes.keys()
+            else:
+                addresses = [hubNode]
+            if "\"" in info:
+                parsed_message = str(info[1:-1]).encode('utf-8')
+
+                messageThread = SendMessageThread(0, 'Send Message', parsed_message, addresses)
+                messageThread.start()
+            else:
+                file = open(info, "rb")
+                file_data = file.read()
+                file.close()
+
+                fileSendThread = SendFileThread(0, 'Send File', file_data, addresses)
+                fileSendThread.start()
+        elif command == 'show-log':
+            print("Log")
+
+        command = input("Star-Node Command: ")
+
+
+    #TODO handle the disconnect command
+
+if __name__ == "__main__":
+    main()
