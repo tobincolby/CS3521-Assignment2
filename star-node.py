@@ -44,8 +44,9 @@ connectedSums = dict()
 
 hubNode = None
 client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-my_address = client_socket.getsockname()
+my_address = ""#client_socket.getsockname()
 my_name = ""
+my_port = -1
 
 
 class ReceivingThread(threading.Thread):
@@ -184,15 +185,34 @@ def connect_to_poc(PoC_address, PoC_port):
     #about the other active nodes
 
     #send a CONNECT_REQ packet to PoC
-    connect_packet = create_packet(PacketType.CONNECT_REQ)
+    #i get an error when actually using the PacketType enum so I am using
+    #just a string to represent the packet type
+    connect_req_packet = create_packet("CONNECT_REQ")
+    client_socket.sendto(connect_req_packet, (PoC_address, PoC_port))
+    client_socket.bind(("", my_port))
+    response = client_socket.recv(65507)
 
+    #--------------------
+    #TODO: handle response. add all connections to global dict
+    #--------------------
 
 def connect_to_network():
     #this function goes through the list of active connections and
     #exchanges contact info with all of them so that the whole network is aware
     #that this node is alive now
+    #------------------------------
+    #TODO: make sure this is correct
+    #------------------------------
+    for connection in connections:
+        connect_req_packet = create_packet("CONNECT_REQ")
+        addr = connections[connection]
+        client_socket.sendto(connect_req_packet, addr)
+        response = client_socket.recv(65507)
+        #dont really need to do anything with the response just make sure that
+        #there actually was one
 
 def main():
+    #remember to uncomment the my_address
     #command line looks like this: star-node <name> <local-port> <PoC-address> <PoC-port> <N>
     my_name = sys.argv[1]
     my_port = sys.argv[2]
@@ -206,6 +226,7 @@ def main():
         #then this node does not have a PoC so we should just keep running
         #until another node connects to us
         #---------------------------------------
+        print("TODO")
     else:
         connect_to_poc(PoC_address, PoC_port)
 
@@ -217,9 +238,11 @@ def main():
         #peer discovery phase. We can now start calculating RTT and find the
         #hub node
 
-    #-------------------------------
+    #----------------------------------
     #TODO: do RTT stuff and find hub
-    #-------------------------------
+    #----------------------------------
+    rttThread = RTTThread(11, "rttThread")
+    rttThread.start()
 
 
     #---------------------------------------------------------------------
@@ -228,6 +251,18 @@ def main():
     #we now have to be able to send/receive messages, do RTT measurements,
     #Heartbeat stuff, and handle commands by the user
     #---------------------------------------------------------------------
+    command = ""
+    while command != "disconnect":
+        command = input("\n")
+        if "send" in command:
+            print( "still need to implement this")
+        elif command == "show-status":
+            print( "still need to implement this")
+        elif command == "show-log":
+            print( "still need to implement this")
+
+
+    #TODO handle the disconnect command
 
 
 if __name__ == "__main__":
