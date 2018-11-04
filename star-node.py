@@ -2,6 +2,7 @@ import socket
 import threading
 import datetime, time, json
 from enum import Enum
+import sys
 
 class PacketType(Enum):
     HEARTBEAT_REQ = 0
@@ -44,6 +45,7 @@ connectedSums = dict()
 hubNode = None
 client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 my_address = client_socket.getsockname()
+my_name = ""
 
 
 class ReceivingThread(threading.Thread):
@@ -177,4 +179,56 @@ class RTTThread(threading.Thread):
                 sendSumThread.start()
             time.sleep(4.5)
 
+def connect_to_poc(PoC_address, PoC_port):
+    #this function contacts the poc and receives all of the information
+    #about the other active nodes
 
+    #send a CONNECT_REQ packet to PoC
+    connect_packet = create_packet(PacketType.CONNECT_REQ)
+
+
+def connect_to_network():
+    #this function goes through the list of active connections and
+    #exchanges contact info with all of them so that the whole network is aware
+    #that this node is alive now
+
+def main():
+    #command line looks like this: star-node <name> <local-port> <PoC-address> <PoC-port> <N>
+    my_name = sys.argv[1]
+    my_port = sys.argv[2]
+    PoC_address = sys.argv[3]
+    PoC_port = sys.argv[4]
+    maxConnections = sys.argv[5]
+
+    #first we try to connect to the POC
+    if (PoC_address == 0):
+        #-----------TODO------------------------
+        #then this node does not have a PoC so we should just keep running
+        #until another node connects to us
+        #---------------------------------------
+    else:
+        connect_to_poc(PoC_address, PoC_port)
+
+        #if that succeeds then we should have all of the active connections
+        #in the network given to us by the poc so lets connect to all of them
+        connect_to_network()
+
+        #now everyone is aware that this node is alive so we have completed
+        #peer discovery phase. We can now start calculating RTT and find the
+        #hub node
+
+    #-------------------------------
+    #TODO: do RTT stuff and find hub
+    #-------------------------------
+
+
+    #---------------------------------------------------------------------
+    #TODO:
+    #we have now found the hub and formed the network
+    #we now have to be able to send/receive messages, do RTT measurements,
+    #Heartbeat stuff, and handle commands by the user
+    #---------------------------------------------------------------------
+
+
+if __name__ == "__main__":
+    main()
