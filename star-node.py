@@ -1,5 +1,5 @@
 import socket
-import threading
+import threading, sys
 import datetime, time, json
 from enum import Enum
 
@@ -35,15 +35,23 @@ def create_packet(packet_type, message=None):
 
 
 
+if not len(sys.argv) == 6:
+    exit()
 
-maxConnections = 0
-connections = dict()
-rTTTimes = dict()
-connectedSums = dict()
+name = sys.argv[1]
+local_port = sys.argv[2]
+pocAddress = sys.argv[3]
+pocPort = sys.argv[4]
+maxConnections = sys.argv[5]
+connections = dict() # Key: Server Name, Value: (IP, Port)
+rTTTimes = dict() # Key: (IP, Port) value: RTT
+connectedSums = dict() # Key: (IP, Port) Value: Sum
 
 hubNode = None
 client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-my_address = client_socket.getsockname()
+my_address = (client_socket.getsockname(), local_port)
+
+
 
 
 class ReceivingThread(threading.Thread):
@@ -114,6 +122,19 @@ class SendMessageThread(threading.Thread):
         for address in self.addresses:
             client_socket.sendto(packet, address)
 
+class SendFileThread(threading.Thread):
+    def __init__(self, threadID, name, file, addresses):
+        threading.Thread.__init__(self)
+        self.threadID = threadID
+        self.name = name
+        self.addresses = addresses
+        self.file = file
+
+    def run(self):
+        packet = create_packet(PacketType.MESSAGE_FILE, self.file)
+        for address in self.addresses:
+            client_socket.sendto(packet, address)
+
 class RTTResponseThread(threading.Thread):
     def __init__(self, threadID, name, address):
         threading.Thread.__init__(self)
@@ -177,4 +198,44 @@ class RTTThread(threading.Thread):
                 sendSumThread.start()
             time.sleep(4.5)
 
+
+message = input("Star-Node Command: ")
+
+while not message == 'disconnect':
+
+    if message == 'show-status':
+        print("Status ================")
+        for x in connections:
+            print(x + " : " + connections[x] + " : " + rTTTimes[connections[x]])
+
+        print("Hub Node: ")
+        for x in connections:
+            if connections[x] == hubNode:
+                print(x)
+                break
+    elif 'send' in message:
+        # sending data logic
+
+        info = message.split(" ")[1]
+        if hubNode is None:
+            addresses = rTTTimes.keys()
+        else:
+            addresses = [hubNode]
+        if "\"" in info:
+            parsed_message = str(info[1:-1]).encode('utf-8')
+
+            messageThread = SendMessageThread(0, 'Send Message', parsed_message, addresses)
+            messageThread.start()
+        else:
+            file = open(info, "rb")
+            file_data = file.read()
+            file.close()
+
+            fileSendThread = SendFileThread(0, 'Send File', file_data, addresses)
+
+    elif 'show-log':
+        print("Log")
+
+
+    message = input("Star-Node Command: ")
 
