@@ -1,10 +1,10 @@
 import socket
-import threading, sys
-import datetime, time, json
-from enum import Enum
-import sys
+import threading
+import time, json
+import sys, copy
+from datetime import datetime, date
 
-class PacketType(Enum):
+class PacketType:
     HEARTBEAT_REQ = 0
     HEARTBEAT_RES = 1
     CONNECT_REQ = 2
@@ -22,8 +22,8 @@ def create_packet(packet_type, message=None):
     packet['packetType'] = packet_type
     if not message is None:
         checksum = 0
-        for byte in message:
-            checksum += int(byte)
+        # for byte in message:
+        #     checksum += (byte)
         packet['message'] = message
         packet['checksum'] = checksum
         packet['messageLength'] = len(message)
@@ -32,7 +32,7 @@ def create_packet(packet_type, message=None):
         packet['messageLength'] = 0
 
     packet_data = json.dumps(packet)
-    return packet_data
+    return packet_data.encode('utf-8')
 
 my_name = ''
 my_port = -1
@@ -41,6 +41,7 @@ pocPort = 0
 maxConnections = 0
 connections = dict() # Key: Server Name, Value: (IP, Port)
 rTTTimes = dict() # Key: (IP, Port) value: RTT
+startTimes = dict() # Key: (IP, Port) value: startTime for RTT
 connectedSums = dict() # Key: (IP, Port) Value: Sum
 
 hubNode = None
@@ -56,54 +57,88 @@ class ReceivingThread(threading.Thread):
         self.name = name
 
     def run(self):
-        global connections, rTTTimes, connectedSums, hubNode
+        global connections, rTTTimes, connectedSums, hubNode, startTimes
 
-        data, recieved_address = client_socket.recvfrom(64000)
+        while True:
+            data, recieved_address = client_socket.recvfrom(64000)
 
-        #parsing of all recieved messages occurs here
+            #parsing of all recieved messages occurs here
 
-        packet = json.loads(data)
-        packet_type = packet['packetType']
+            packet = json.loads(data.decode('utf-8'))
+            packet_type = packet['packetType']
 
-        if packet_type == PacketType.SUM:
-            message = packet['message']
-            sent_sum = int(message.decode("utf-8"))
-            connectedSums[recieved_address] = sent_sum
+            if packet_type == PacketType.SUM:
+                message = packet['message']
+                sent_sum = float(message)
+                connectedSums[recieved_address] = sent_sum
 
-            if len(connectedSums) == len(connections) + 1 and len(connections) > 0:
-                if hubNode is None:
-                    minAddress = connectedSums.keys()[0]
-                    minSum = connectedSums[minAddress]
-                    for connectedSum in connectedSums:
-                        if connectedSums[connectedSum] < minSum:
-                            minSum = connectedSums[connectedSum]
-                            minAddress = connectedSum
+                if len(connectedSums) == len(connections) + 1 and len(connections) > 0:
+                    if hubNode is None:
+                        minAddress = None
+                        minSum = sys.maxsize
+                        for connectedSum in connectedSums:
+                            if connectedSums[connectedSum] < minSum:
+                                minSum = connectedSums[connectedSum]
+                                minAddress = connectedSum
 
-                    hubNode = minAddress
-                elif connectedSums[hubNode] > sent_sum:
-                    hubNode = recieved_address
+                        hubNode = minAddress
+                    elif connectedSums[hubNode] > sent_sum:
+                        hubNode = recieved_address
 
-        elif packet_type == PacketType.RTT_RES:
-            start_time = rTTTimes[recieved_address]
-            end_time = datetime.datetime.now().time()
-            rtt = (end_time - start_time).total_seconds() * 1000
-            rTTTimes[recieved_address] = rtt
+            elif packet_type == PacketType.RTT_RES:
+                print("RTT RESPONSE RECIEVED")
+                start_time = startTimes[recieved_address]
+                end_time = datetime.now().time()
+                rtt = (datetime.combine(date.today(), end_time) - datetime.combine(date.today(), start_time)).total_seconds() * 1000
+                rTTTimes[recieved_address] = rtt
 
-        elif packet_type == PacketType.RTT_REQ:
-            rttResponseThread = RTTResponseThread(0, 'RTTResponseThread', recieved_address)
-            rttResponseThread.start()
+            elif packet_type == PacketType.RTT_REQ:
+                print("RTT REQUEST RECIEVECD")
+                rttResponseThread = RTTResponseThread(0, 'RTTResponseThread', recieved_address)
+                rttResponseThread.start()
 
-        elif packet_type == PacketType.MESSAGE_TEXT:
-            if hubNode == my_address:
-                addresses = []
-                for connection in connections:
-                    addresses.append(connections[connection])
+            elif packet_type == PacketType.MESSAGE_TEXT:
+                if hubNode == my_address:
+                    addresses = []
+                    for connection in connections:
+                        addresses.append(connections[connection])
 
-                sendMessage = SendMessageThread(0, 'SendMessageThread', packet['message'], addresses)
-                sendMessage.start()
+                    sendMessage = SendMessageThread(0, 'SendMessageThread', packet['message'], addresses)
+                    sendMessage.start()
+            elif packet_type == PacketType.MESSAGE_FILE:
+                if hubNode == my_address:
+                    addresses = []
+                    for connection in connections:
+                        addresses.append(connections[connection])
+
+                    sendFile = SendMessageThread(0, 'SendFileThread', packet['message'], addresses)
+                    sendFile.start()
+
+            elif packet_type == PacketType.CONNECT_REQ:
+
+                name = packet['message']
+
+                sent_connections = copy.deepcopy(connections)
+                sent_connections[my_name] = my_address
+                print("RECEIVED CONNECT REQUEST ")
+
+                connectionResponseThread = ConnectionResponseThread(0, 'Connection Response', recieved_address, sent_connections)
+
+                connectionResponseThread.start()
+                connections[name] = recieved_address
 
 
+class ConnectionResponseThread(threading.Thread):
+    def __init__(self, threadID, name, address, message):
+        threading.Thread.__init__(self)
+        self.threadID = threadID
+        self.name = name
+        self.address = address
+        self.message = message
 
+    def run(self):
+        packet = create_packet(PacketType.CONNECT_RES, self.message)
+        client_socket.sendto(packet, self.address)
 class SendMessageThread(threading.Thread):
     def __init__(self, threadID, name, message, addresses):
         threading.Thread.__init__(self)
@@ -139,6 +174,7 @@ class RTTResponseThread(threading.Thread):
 
     def run(self):
         packet = create_packet(PacketType.RTT_RES)
+        print("SENT RTT RESPONSE")
         client_socket.sendto(packet, self.address)
 
 
@@ -158,12 +194,12 @@ class SumThread(threading.Thread):
 
         connectedSums[my_address] = summedValue
 
-        if summedValue < connectedSums[hubNode]:
+        if hubNode is not None and summedValue < connectedSums[hubNode]:
             hubNode = my_address
         #send summed value to all the connected nodes
         for connection in connections:
             addr = connections[connection]
-            message = str(summedValue).encode('utf-8')
+            message = str(summedValue)
             packet = create_packet(PacketType.SUM, message)
             client_socket.sendto(packet, addr)
 
@@ -174,37 +210,38 @@ class RTTThread(threading.Thread):
         self.name = name
 
     def run(self):
-        global connections, rTTTimes
+        global connections, startTimes
         while True:
+            print("RTT Thread: " + str(connections))
             for connection in connections:
                 addr = connections[connection]
-                rTTTimes[addr] = datetime.datetime.now().time()
+                startTimes[addr] = datetime.now().time()
                 packet = create_packet(PacketType.RTT_REQ)
                 client_socket.sendto(packet, addr)
-            time.sleep(0.5)
-            recieved_all_responses = True
-            for rTTTime in rTTTimes:
-                if type(rTTTimes[rTTTime]) == type(datetime.datetime.now()):
-                    recieved_all_responses = False
-                    break
 
-            if recieved_all_responses:
-                sendSumThread = SumThread(10, 'SendSumThread')
-                sendSumThread.start()
-            time.sleep(4.5)
+
+            sendSumThread = SumThread(10, 'SendSumThread')
+            sendSumThread.start()
+            time.sleep(5)
 
 def connect_to_poc(PoC_address, PoC_port):
+    global connections
     #this function contacts the poc and receives all of the information
     #about the other active nodes
 
     #send a CONNECT_REQ packet to PoC
     #i get an error when actually using the PacketType enum so I am using
     #just a string to represent the packet type
-    connect_req_packet = create_packet(PacketType.CONNECT_REQ)
+    connect_req_packet = create_packet(PacketType.CONNECT_REQ, message=my_name)
     client_socket.sendto(connect_req_packet, (PoC_address, PoC_port))
-    client_socket.bind(("", my_port))
     response = client_socket.recv(65507)
-
+    packet = json.loads(response.decode('utf-8'))
+    type = packet["packetType"]
+    if type == PacketType.CONNECT_RES:
+        new_connections = packet["message"]
+        print("NewConnections: " + str(new_connections))
+        for new_connection in new_connections:
+            connections[new_connection] = tuple(new_connections[new_connection])
     #--------------------
     #TODO: handle response. add all connections to global dict
     #--------------------
@@ -217,7 +254,7 @@ def connect_to_network():
     #TODO: make sure this is correct
     #------------------------------
     for connection in connections:
-        connect_req_packet = create_packet(PacketType.CONNECT_REQ)
+        connect_req_packet = create_packet(PacketType.CONNECT_REQ, message=my_name)
         addr = connections[connection]
         client_socket.sendto(connect_req_packet, addr)
         #dont really need to do anything with the response just make sure that
@@ -226,17 +263,19 @@ def connect_to_network():
 def main():
     #remember to uncomment the my_address
     #command line looks like this: star-node <name> <local-port> <PoC-address> <PoC-port> <N>
+    global my_name, my_port, maxConnections, client_socket, my_address, connections, hubNode, rTTTimes
     my_name = sys.argv[1]
-    my_port = sys.argv[2]
+    my_port = int(sys.argv[2])
     poc_address = sys.argv[3]
-    poc_port = sys.argv[4]
-    maxConnections = sys.argv[5]
+    poc_port = int(sys.argv[4])
+    maxConnections = int(sys.argv[5])
 
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    my_address = (client_socket.getsockname(), my_port)
+    my_address = ('127.0.0.1', my_port)
+    client_socket.bind(('', my_port))
 
     #first we try to connect to the POC
-    if (pocAddress == 0):
+    if (poc_address == '0'):
         #-----------TODO------------------------
         #then this node does not have a PoC so we should just keep running
         #until another node connects to us
@@ -252,6 +291,9 @@ def main():
         #now everyone is aware that this node is alive so we have completed
         #peer discovery phase. We can now start calculating RTT and find the
         #hub node
+
+    recivingThread = ReceivingThread(0, "Recieving Thread")
+    recivingThread.start()
 
     #----------------------------------
     #TODO: do RTT stuff and find hub
@@ -272,10 +314,11 @@ def main():
 
         if command == 'show-status':
             print("Status ================")
+            print(connections)
             for x in connections:
-                print(x + " : " + connections[x] + " : " + rTTTimes[connections[x]])
+                print(x + " : " + str(connections[x]) + " : " + str(rTTTimes[connections[x]]))
 
-            print("Hub Node: ")
+            print("Hub Node: " + str(hubNode))
             for x in connections:
                 if connections[x] == hubNode:
                     print(x)
