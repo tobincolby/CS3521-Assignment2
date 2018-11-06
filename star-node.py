@@ -46,6 +46,7 @@ connectedSums = dict() # Key: (IP, Port) Value: Sum
 
 hubNode = None
 client_socket = None
+logs = list()
 my_address = (0,0)
 
 
@@ -57,7 +58,7 @@ class ReceivingThread(threading.Thread):
         self.name = name
 
     def run(self):
-        global connections, rTTTimes, connectedSums, hubNode, startTimes
+        global connections, rTTTimes, connectedSums, hubNode, startTimes, logs
 
         while True:
             data, recieved_address = client_socket.recvfrom(64000)
@@ -71,8 +72,9 @@ class ReceivingThread(threading.Thread):
                 message = packet['message']
                 sent_sum = float(message)
                 connectedSums[recieved_address] = sent_sum
+                logs.append(str(datetime.now().time()) + ' SUM Value Recieved: ' + str(sent_sum) + ' ' + str(recieved_address))
 
-                if len(connectedSums) == len(connections) + 1 and len(connections) > 0:
+                if len(connectedSums) == len(connections) + 1 and len(connections) > 1:
                     if hubNode is None:
                         minAddress = None
                         minSum = sys.maxsize
@@ -82,11 +84,18 @@ class ReceivingThread(threading.Thread):
                                 minAddress = connectedSum
 
                         hubNode = minAddress
+                        logs.append(str(datetime.now().time()) + ' Hub Node Updated: ' + str(hubNode))
+
                     elif connectedSums[hubNode] > sent_sum:
                         hubNode = recieved_address
+                        logs.append(str(datetime.now().time()) + ' Hub Node Updated: ' + str(hubNode))
+
 
             elif packet_type == PacketType.RTT_RES:
                 print("RTT RESPONSE RECIEVED")
+                logs.append(
+                    str(datetime.now().time()) + ' RTT Response Recieved: ' + str(recieved_address))
+
                 start_time = startTimes[recieved_address]
                 end_time = datetime.now().time()
                 rtt = (datetime.combine(date.today(), end_time) - datetime.combine(date.today(), start_time)).total_seconds() * 1000
@@ -94,22 +103,30 @@ class ReceivingThread(threading.Thread):
 
             elif packet_type == PacketType.RTT_REQ:
                 print("RTT REQUEST RECIEVECD")
+                logs.append(str(datetime.now().time()) + ' RTT Request Recieved: ' + str(recieved_address))
+
                 rttResponseThread = RTTResponseThread(0, 'RTTResponseThread', recieved_address)
                 rttResponseThread.start()
 
             elif packet_type == PacketType.MESSAGE_TEXT:
+                logs.append(str(datetime.now().time()) + ' Message Recieved: ' + str(recieved_address) + ' : ' + str(packet['message']))
+
                 if hubNode == my_address:
                     addresses = []
                     for connection in connections:
-                        addresses.append(connections[connection])
-
+                        if not connections[connection] == recieved_address:
+                            addresses.append(connections[connection])
+                    logs.append(str(datetime.now().time()) + ' Message Forwarded: ' + str(addresses))
                     sendMessage = SendMessageThread(0, 'SendMessageThread', packet['message'], addresses)
                     sendMessage.start()
             elif packet_type == PacketType.MESSAGE_FILE:
+                logs.append(str(datetime.now().time()) + ' Message Recieved: ' + str(recieved_address))
                 if hubNode == my_address:
                     addresses = []
                     for connection in connections:
-                        addresses.append(connections[connection])
+                        if not connections[connection] == recieved_address:
+                            addresses.append(connections[connection])
+                    logs.append(str(datetime.now().time()) + ' Message Forwarded: ' + str(addresses))
 
                     sendFile = SendMessageThread(0, 'SendFileThread', packet['message'], addresses)
                     sendFile.start()
@@ -119,13 +136,16 @@ class ReceivingThread(threading.Thread):
                 name = packet['message']
 
                 sent_connections = copy.deepcopy(connections)
-                sent_connections[my_name] = my_address
+                sent_connections[my_name] = None
                 print("RECEIVED CONNECT REQUEST ")
 
                 connectionResponseThread = ConnectionResponseThread(0, 'Connection Response', recieved_address, sent_connections)
 
                 connectionResponseThread.start()
                 connections[name] = recieved_address
+                logs.append(
+                    str(datetime.now().time()) + 'Connected to New Star Node: ' + str(name) + ' ' + str(
+                        recieved_address))
 
 
 class ConnectionResponseThread(threading.Thread):
@@ -148,9 +168,12 @@ class SendMessageThread(threading.Thread):
         self.message = message
 
     def run(self):
+        global logs
         packet = create_packet(PacketType.MESSAGE_TEXT, self.message)
         for address in self.addresses:
             client_socket.sendto(packet, address)
+            logs.append(str(datetime.now().time()) + ' Message Sent: ' + str(address))
+
 
 class SendFileThread(threading.Thread):
     def __init__(self, threadID, name, file, addresses):
@@ -161,9 +184,12 @@ class SendFileThread(threading.Thread):
         self.file = file
 
     def run(self):
+        global logs
         packet = create_packet(PacketType.MESSAGE_FILE, self.file)
         for address in self.addresses:
             client_socket.sendto(packet, address)
+            logs.append(str(datetime.now().time()) + ' Message Sent: ' + str(address))
+
 
 class RTTResponseThread(threading.Thread):
     def __init__(self, threadID, name, address):
@@ -173,8 +199,11 @@ class RTTResponseThread(threading.Thread):
         self.address = address
 
     def run(self):
+        global logs
         packet = create_packet(PacketType.RTT_RES)
         print("SENT RTT RESPONSE")
+        logs.append(str(datetime.now().time()) + ' RTT Response Sent: ' + str(self.address))
+
         client_socket.sendto(packet, self.address)
 
 
@@ -185,17 +214,20 @@ class SumThread(threading.Thread):
         self.name = name
 
     def run(self):
-        global connections, rTTTimes, connectedSums, hubNode
+        global connections, rTTTimes, connectedSums, hubNode, logs
 
         summedValue = 0
         for rtt in rTTTimes:
             value = rTTTimes[rtt]
             summedValue += value
+        logs.append(str(datetime.now().time()) + ' SUM Calculated: ' + str(summedValue))
 
         connectedSums[my_address] = summedValue
 
         if hubNode is not None and summedValue < connectedSums[hubNode]:
             hubNode = my_address
+            logs.append(str(datetime.now().time()) + ' Hub Node Updated: ' + str(hubNode))
+
         #send summed value to all the connected nodes
         for connection in connections:
             addr = connections[connection]
@@ -210,14 +242,15 @@ class RTTThread(threading.Thread):
         self.name = name
 
     def run(self):
-        global connections, startTimes
+        global connections, startTimes, logs
         while True:
-            print("RTT Thread: " + str(connections))
             for connection in connections:
                 addr = connections[connection]
                 startTimes[addr] = datetime.now().time()
                 packet = create_packet(PacketType.RTT_REQ)
                 client_socket.sendto(packet, addr)
+                logs.append(str(datetime.now().time()) + ' RTT Request Sent: ' + str(addr))
+
 
 
             sendSumThread = SumThread(10, 'SendSumThread')
@@ -225,7 +258,7 @@ class RTTThread(threading.Thread):
             time.sleep(5)
 
 def connect_to_poc(PoC_address, PoC_port):
-    global connections
+    global connections, logs
     #this function contacts the poc and receives all of the information
     #about the other active nodes
 
@@ -234,14 +267,18 @@ def connect_to_poc(PoC_address, PoC_port):
     #just a string to represent the packet type
     connect_req_packet = create_packet(PacketType.CONNECT_REQ, message=my_name)
     client_socket.sendto(connect_req_packet, (PoC_address, PoC_port))
-    response = client_socket.recv(65507)
+    response, received_address = client_socket.recvfrom(65507)
     packet = json.loads(response.decode('utf-8'))
     type = packet["packetType"]
     if type == PacketType.CONNECT_RES:
         new_connections = packet["message"]
         print("NewConnections: " + str(new_connections))
         for new_connection in new_connections:
-            connections[new_connection] = tuple(new_connections[new_connection])
+            logs.append(str(datetime.now().time()) + 'Connected to New Star Node: ' + str(new_connection) + ' ' + str(new_connections[new_connection]))
+            if new_connections[new_connection] is None:
+                connections[new_connection] = received_address
+            else:
+                connections[new_connection] = tuple(new_connections[new_connection])
     #--------------------
     #TODO: handle response. add all connections to global dict
     #--------------------
@@ -263,7 +300,7 @@ def connect_to_network():
 def main():
     #remember to uncomment the my_address
     #command line looks like this: star-node <name> <local-port> <PoC-address> <PoC-port> <N>
-    global my_name, my_port, maxConnections, client_socket, my_address, connections, hubNode, rTTTimes
+    global my_name, my_port, maxConnections, client_socket, my_address, connections, hubNode, rTTTimes, logs
     my_name = sys.argv[1]
     my_port = int(sys.argv[2])
     poc_address = sys.argv[3]
@@ -344,7 +381,8 @@ def main():
                 fileSendThread = SendFileThread(0, 'Send File', file_data, addresses)
                 fileSendThread.start()
         elif command == 'show-log':
-            print("Log")
+            for log in logs:
+                print(log)
 
         command = input("Star-Node Command: ")
 
