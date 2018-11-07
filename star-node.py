@@ -329,7 +329,7 @@ def main():
     maxConnections = int(sys.argv[5])
 
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    my_ip = socket.gethostbyname(socket.getfqdn()) #'127.0.0.1'
+    my_ip = """socket.gethostbyname(socket.getfqdn()) """'127.0.0.1'
     my_address = (my_ip, my_port)
     client_socket.bind(('', my_port))
 
@@ -385,13 +385,13 @@ def main():
         elif 'send' in command:
             # sending data logic
 
-            info = command.split(" ")[1]
+            info = command[5:]
             if hubNode is None or hubNode == my_address:
                 addresses = connections.values()
             else:
                 addresses = [hubNode]
             if "\"" in info:
-                parsed_message = str(info[1:-1]).encode('utf-8')
+                parsed_message = str(info[1:-1])
 
                 messageThread = SendMessageThread(0, 'Send Message', parsed_message, addresses)
                 messageThread.start()
