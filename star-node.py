@@ -265,9 +265,18 @@ def connect_to_poc(PoC_address, PoC_port):
     #send a CONNECT_REQ packet to PoC
     #i get an error when actually using the PacketType enum so I am using
     #just a string to represent the packet type
+    response = None
+    received_address = None
+    client_socket.settimeout(5)
+    received = False
     connect_req_packet = create_packet(PacketType.CONNECT_REQ, message=my_name)
-    client_socket.sendto(connect_req_packet, (PoC_address, PoC_port))
-    response, received_address = client_socket.recvfrom(65507)
+    while not received:
+        client_socket.sendto(connect_req_packet, (PoC_address, PoC_port))
+        try:
+            response, received_address = client_socket.recvfrom(65507)
+            received = True
+        except socket.timeout:
+            received = False
     packet = json.loads(response.decode('utf-8'))
     type = packet["packetType"]
     if type == PacketType.CONNECT_RES:
@@ -279,6 +288,7 @@ def connect_to_poc(PoC_address, PoC_port):
                 connections[new_connection] = received_address
             else:
                 connections[new_connection] = tuple(new_connections[new_connection])
+    client_socket.settimeout(None)
     #--------------------
     #TODO: handle response. add all connections to global dict
     #--------------------
@@ -364,8 +374,8 @@ def main():
             # sending data logic
 
             info = command.split(" ")[1]
-            if hubNode is None:
-                addresses = rTTTimes.keys()
+            if hubNode is None or hubNode == my_address:
+                addresses = connections.values()
             else:
                 addresses = [hubNode]
             if "\"" in info:
