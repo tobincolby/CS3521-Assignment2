@@ -59,6 +59,7 @@ class ReceivingThread(threading.Thread):
 
     def run(self):
         global connections, rTTTimes, connectedSums, hubNode, startTimes, logs
+        rttReceived = 0
 
         while True:
             data, recieved_address = client_socket.recvfrom(64000)
@@ -86,13 +87,23 @@ class ReceivingThread(threading.Thread):
                         hubNode = minAddress
                         logs.append(str(datetime.now().time()) + ' Hub Node Updated: ' + str(hubNode))
 
-                    elif connectedSums[hubNode] > sent_sum:
-                        hubNode = recieved_address
-                        logs.append(str(datetime.now().time()) + ' Hub Node Updated: ' + str(hubNode))
+                    else:
+                        minAddress = None
+                        minSum = sys.maxsize
+                        for connectedSum in connectedSums:
+                            if connectedSums[connectedSum] < minSum:
+                                minSum = connectedSums[connectedSum]
+                                minAddress = connectedSum
+
+                        if not (minAddress == hubNode):
+
+                            if connectedSums[hubNode] * .9 > minSum:
+
+                                hubNode = minAddress
+                                logs.append(str(datetime.now().time()) + ' Hub Node Updated: ' + str(hubNode))
 
 
             elif packet_type == PacketType.RTT_RES:
-                print("RTT RESPONSE RECIEVED")
                 logs.append(
                     str(datetime.now().time()) + ' RTT Response Recieved: ' + str(recieved_address))
 
@@ -100,9 +111,14 @@ class ReceivingThread(threading.Thread):
                 end_time = datetime.now().time()
                 rtt = (datetime.combine(date.today(), end_time) - datetime.combine(date.today(), start_time)).total_seconds() * 1000
                 rTTTimes[recieved_address] = rtt
+                rttReceived += 1
+
+                if (len(connections) == len(rTTTimes) and rttReceived == len(connections)):
+                    sendSumThread = SumThread(10, 'SendSumThread')
+                    sendSumThread.start()
+                    rttReceived = 0
 
             elif packet_type == PacketType.RTT_REQ:
-                print("RTT REQUEST RECIEVECD")
                 logs.append(str(datetime.now().time()) + ' RTT Request Recieved: ' + str(recieved_address))
 
                 rttResponseThread = RTTResponseThread(0, 'RTTResponseThread', recieved_address)
@@ -137,7 +153,6 @@ class ReceivingThread(threading.Thread):
 
                 sent_connections = copy.deepcopy(connections)
                 sent_connections[my_name] = None
-                print("RECEIVED CONNECT REQUEST ")
 
                 connectionResponseThread = ConnectionResponseThread(0, 'Connection Response', recieved_address, sent_connections)
 
@@ -201,7 +216,6 @@ class RTTResponseThread(threading.Thread):
     def run(self):
         global logs
         packet = create_packet(PacketType.RTT_RES)
-        print("SENT RTT RESPONSE")
         logs.append(str(datetime.now().time()) + ' RTT Response Sent: ' + str(self.address))
 
         client_socket.sendto(packet, self.address)
@@ -222,18 +236,20 @@ class SumThread(threading.Thread):
             summedValue += value
         logs.append(str(datetime.now().time()) + ' SUM Calculated: ' + str(summedValue))
 
-        connectedSums[my_address] = summedValue
 
-        if hubNode is not None and summedValue < connectedSums[hubNode]:
-            hubNode = my_address
-            logs.append(str(datetime.now().time()) + ' Hub Node Updated: ' + str(hubNode))
+        if not (summedValue == 0):
+            connectedSums[my_address] = summedValue
+            for connection in connections:
+                addr = connections[connection]
+                message = str(summedValue)
+                packet = create_packet(PacketType.SUM, message)
+                client_socket.sendto(packet, addr)
+        # if hubNode is not None and summedValue < connectedSums[hubNode]:
+        #     hubNode = my_address
+        #     logs.append(str(datetime.now().time()) + ' Hub Node Updated: ' + str(hubNode))
 
         #send summed value to all the connected nodes
-        for connection in connections:
-            addr = connections[connection]
-            message = str(summedValue)
-            packet = create_packet(PacketType.SUM, message)
-            client_socket.sendto(packet, addr)
+
 
 class RTTThread(threading.Thread):
     def __init__(self, threadID, name):
@@ -251,10 +267,6 @@ class RTTThread(threading.Thread):
                 client_socket.sendto(packet, addr)
                 logs.append(str(datetime.now().time()) + ' RTT Request Sent: ' + str(addr))
 
-
-
-            sendSumThread = SumThread(10, 'SendSumThread')
-            sendSumThread.start()
             time.sleep(5)
 
 def connect_to_poc(PoC_address, PoC_port):
@@ -281,7 +293,6 @@ def connect_to_poc(PoC_address, PoC_port):
     type = packet["packetType"]
     if type == PacketType.CONNECT_RES:
         new_connections = packet["message"]
-        print("NewConnections: " + str(new_connections))
         for new_connection in new_connections:
             logs.append(str(datetime.now().time()) + 'Connected to New Star Node: ' + str(new_connection) + ' ' + str(new_connections[new_connection]))
             if new_connections[new_connection] is None:
@@ -318,7 +329,8 @@ def main():
     maxConnections = int(sys.argv[5])
 
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    my_address = ('127.0.0.1', my_port)
+    my_ip = socket.gethostbyname(socket.getfqdn()) #'127.0.0.1'
+    my_address = (my_ip, my_port)
     client_socket.bind(('', my_port))
 
     #first we try to connect to the POC
