@@ -3,6 +3,7 @@ import threading
 import time, json
 import sys, copy
 from datetime import datetime, date
+import pickle
 
 class PacketType:
     HEARTBEAT_REQ = 0
@@ -33,6 +34,20 @@ def create_packet(packet_type, message=None):
 
     packet_data = json.dumps(packet)
     return packet_data.encode('utf-8')
+
+#made a seperate function to create file packets
+#because json would not serialize them
+def create_file_packet(file):
+    packet = dict()
+    packet['packetType'] = PacketType.MESSAGE_FILE
+    checksum = 0
+    # for byte in message:
+    #     checksum += (byte)
+    packet['message'] = file
+    packet['checksum'] = checksum
+    #packet['messageLength'] = len(message)
+    packet_data = pickle.dumps(packet)
+    return packet_data
 
 my_name = ''
 my_port = -1
@@ -65,8 +80,11 @@ class ReceivingThread(threading.Thread):
             data, recieved_address = client_socket.recvfrom(64000)
 
             #parsing of all recieved messages occurs here
+            try:
+                packet = json.loads(data.decode('utf-8'))
+            except Exception as e:
+                packet = pickle.loads(data)
 
-            packet = json.loads(data.decode('utf-8'))
             packet_type = packet['packetType']
 
             if packet_type == PacketType.SUM:
@@ -115,6 +133,7 @@ class ReceivingThread(threading.Thread):
 
                 if (len(connections) == len(rTTTimes) and rttReceived == len(connections)):
                     sendSumThread = SumThread(10, 'SendSumThread')
+                    sendSumThread.setDaemon(True)
                     sendSumThread.start()
                     rttReceived = 0
 
@@ -126,7 +145,7 @@ class ReceivingThread(threading.Thread):
 
             elif packet_type == PacketType.MESSAGE_TEXT:
                 logs.append(str(datetime.now().time()) + ' Message Recieved: ' + str(recieved_address) + ' : ' + str(packet['message']))
-
+                print("new message received from " + str(recieved_address) + ": "+ str(packet['message']))
                 if hubNode == my_address:
                     addresses = []
                     for connection in connections:
@@ -134,9 +153,11 @@ class ReceivingThread(threading.Thread):
                             addresses.append(connections[connection])
                     logs.append(str(datetime.now().time()) + ' Message Forwarded: ' + str(addresses))
                     sendMessage = SendMessageThread(0, 'SendMessageThread', packet['message'], addresses)
+                    sendMessage.setDaemon(True)
                     sendMessage.start()
             elif packet_type == PacketType.MESSAGE_FILE:
-                logs.append(str(datetime.now().time()) + ' Message Recieved: ' + str(recieved_address))
+                logs.append(str(datetime.now().time()) + ' File Recieved: ' + str(recieved_address))
+                print("new file received from " + str(recieved_address))#don't want to print the whole file #+ ": "+ str(packet['message']))
                 if hubNode == my_address:
                     addresses = []
                     for connection in connections:
@@ -144,7 +165,8 @@ class ReceivingThread(threading.Thread):
                             addresses.append(connections[connection])
                     logs.append(str(datetime.now().time()) + ' Message Forwarded: ' + str(addresses))
 
-                    sendFile = SendMessageThread(0, 'SendFileThread', packet['message'], addresses)
+                    sendFile = SendFileThread(0, 'SendFileThread', packet['message'], addresses)
+                    sendFile.setDaemon(True)
                     sendFile.start()
 
             elif packet_type == PacketType.CONNECT_REQ:
@@ -155,7 +177,7 @@ class ReceivingThread(threading.Thread):
                 sent_connections[my_name] = None
 
                 connectionResponseThread = ConnectionResponseThread(0, 'Connection Response', recieved_address, sent_connections)
-
+                connectionResponseThread.setDaemon(True)
                 connectionResponseThread.start()
                 connections[name] = recieved_address
                 logs.append(
@@ -200,10 +222,10 @@ class SendFileThread(threading.Thread):
 
     def run(self):
         global logs
-        packet = create_packet(PacketType.MESSAGE_FILE, self.file)
+        packet = create_file_packet(self.file)
         for address in self.addresses:
             client_socket.sendto(packet, address)
-            logs.append(str(datetime.now().time()) + ' Message Sent: ' + str(address))
+            logs.append(str(datetime.now().time()) + ' File Sent: ' + str(address))
 
 
 class RTTResponseThread(threading.Thread):
@@ -329,7 +351,7 @@ def main():
     maxConnections = int(sys.argv[5])
 
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    my_ip = """socket.gethostbyname(socket.getfqdn()) """'127.0.0.1'
+    my_ip = socket.gethostbyname(socket.getfqdn()) #127.0.0.1'
     my_address = (my_ip, my_port)
     client_socket.bind(('', my_port))
 
@@ -352,12 +374,14 @@ def main():
         #hub node
 
     recivingThread = ReceivingThread(0, "Recieving Thread")
+    recivingThread.setDaemon(True)
     recivingThread.start()
 
     #----------------------------------
     #TODO: do RTT stuff and find hub
     #----------------------------------
     rttThread = RTTThread(11, "rttThread")
+    rttThread.setDaemon(True)
     rttThread.start()
 
 
@@ -394,6 +418,7 @@ def main():
                 parsed_message = str(info[1:-1])
 
                 messageThread = SendMessageThread(0, 'Send Message', parsed_message, addresses)
+                messageThread.setDaemon(True)
                 messageThread.start()
             else:
                 file = open(info, "rb")
@@ -401,6 +426,7 @@ def main():
                 file.close()
 
                 fileSendThread = SendFileThread(0, 'Send File', file_data, addresses)
+                fileSendThread.setDaemon(True)
                 fileSendThread.start()
         elif command == 'show-log':
             for log in logs:
@@ -408,7 +434,8 @@ def main():
 
         command = input("Star-Node Command: ")
 
-
+    print("disconnecting")
+    sys.exit()
     #TODO handle the disconnect command
 
 if __name__ == "__main__":
