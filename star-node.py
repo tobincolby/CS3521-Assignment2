@@ -304,13 +304,17 @@ def connect_to_poc(PoC_address, PoC_port):
     client_socket.settimeout(5)
     received = False
     connect_req_packet = create_packet(PacketType.CONNECT_REQ, message=my_name)
-    while not received:
+    connection_attempts = 0
+    while not received and connection_attempts <= 12:
         client_socket.sendto(connect_req_packet, (PoC_address, PoC_port))
         try:
             response, received_address = client_socket.recvfrom(65507)
             received = True
         except socket.timeout:
             received = False
+            connection_attempts += 1
+    if connection_attempts > 12:
+        return -1
     packet = json.loads(response.decode('utf-8'))
     type = packet["packetType"]
     if type == PacketType.CONNECT_RES:
@@ -322,6 +326,7 @@ def connect_to_poc(PoC_address, PoC_port):
             else:
                 connections[new_connection] = tuple(new_connections[new_connection])
     client_socket.settimeout(None)
+    return 1
     #--------------------
     #TODO: handle response. add all connections to global dict
     #--------------------
@@ -363,8 +368,11 @@ def main():
         #---------------------------------------
         print("TODO")
     else:
-        connect_to_poc(poc_address, poc_port)
-
+        c = connect_to_poc(poc_address, poc_port)
+        if c == -1:
+            print("failed to connect to PoC after 1 minute.")
+            print("check that PoC is online.")
+            sys.exit()
         #if that succeeds then we should have all of the active connections
         #in the network given to us by the poc so lets connect to all of them
         connect_to_network()
