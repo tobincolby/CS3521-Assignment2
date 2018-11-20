@@ -22,14 +22,9 @@ def create_packet(packet_type, message=None):
     packet = dict()
     packet['packetType'] = packet_type
     if not message is None:
-        checksum = 0
-        # for byte in message:
-        #     checksum += (byte)
         packet['message'] = message
-        packet['checksum'] = checksum
         packet['messageLength'] = len(message)
     else:
-        packet['checksum'] = 0
         packet['messageLength'] = 0
 
     packet_data = json.dumps(packet)
@@ -40,11 +35,7 @@ def create_packet(packet_type, message=None):
 def create_file_packet(file):
     packet = dict()
     packet['packetType'] = PacketType.MESSAGE_FILE
-    checksum = 0
-    # for byte in message:
-    #     checksum += (byte)
     packet['message'] = file
-    packet['checksum'] = checksum
     #packet['messageLength'] = len(message)
     packet_data = pickle.dumps(packet)
     return packet_data
@@ -58,6 +49,8 @@ connections = dict() # Key: Server Name, Value: (IP, Port)
 rTTTimes = dict() # Key: (IP, Port) value: RTT
 startTimes = dict() # Key: (IP, Port) value: startTime for RTT
 connectedSums = dict() # Key: (IP, Port) Value: Sum
+receivedAck = dict() # Key: (IP, Port) Value: Bool value for whether or not ack was received
+heartBeatTimes = dict() # Key: (IP, Port) Value: last time a heartbeat response was received
 
 hubNode = None
 client_socket = None
@@ -145,6 +138,8 @@ class ReceivingThread(threading.Thread):
 
             elif packet_type == PacketType.MESSAGE_TEXT:
                 logs.append(str(datetime.now().time()) + ' Message Recieved: ' + str(recieved_address) + ' : ' + str(packet['message']))
+                sendACKThread = SendACKThread(0, 'Send ACK Thread', recieved_address)
+                sendACKThread.start()
                 print("new message received from " + str(recieved_address) + ": "+ str(packet['message']))
                 if hubNode == my_address:
                     addresses = []
@@ -157,6 +152,8 @@ class ReceivingThread(threading.Thread):
                     sendMessage.start()
             elif packet_type == PacketType.MESSAGE_FILE:
                 logs.append(str(datetime.now().time()) + ' File Recieved: ' + str(recieved_address))
+                sendACKThread = SendACKThread(0, 'Send ACK Thread', recieved_address)
+                sendACKThread.start()
                 print("new file received from " + str(recieved_address))#don't want to print the whole file #+ ": "+ str(packet['message']))
                 if hubNode == my_address:
                     addresses = []
@@ -180,9 +177,97 @@ class ReceivingThread(threading.Thread):
                 connectionResponseThread.setDaemon(True)
                 connectionResponseThread.start()
                 connections[name] = recieved_address
+                heartBeatTimes[recieved_address] = datetime.now().time()
                 logs.append(
                     str(datetime.now().time()) + 'Connected to New Star Node: ' + str(name) + ' ' + str(
                         recieved_address))
+            elif packet_type == PacketType.ACK:
+                logs.append(str(datetime.now().time()) + ' ACK Received: ' + str(recieved_address))
+
+                receivedAck[recieved_address] = True
+
+            elif packet_type == PacketType.HEARTBEAT_REQ:
+                logs.append(str(datetime.now().time()) + ' Heartbeat Request Received: ' + str(recieved_address))
+
+                heartBeatResponse = SendHeartbeatResponse(0, 'Send Heartbeat Response', recieved_address)
+                heartBeatResponse.start()
+
+            elif packet_type == PacketType.HEARTBEAT_RES:
+                logs.append(str(datetime.now().time()) + ' Heartbeat Response Received: ' + str(recieved_address))
+
+                heartBeatTimes[recieved_address] = datetime.now().time()
+
+class HeartbeatThread(threading.Thread):
+    def __init__(self, threadID, name):
+        threading.Thread.__init__(self)
+        self.threadID = threadID
+        self.name = name
+
+    def run(self):
+        while True:
+            for connection in connections:
+                address = connections[connection]
+                start_time = heartBeatTimes[address]
+                end_time = datetime.now().time()
+                heartBeatDiff = (datetime.combine(date.today(), end_time) - datetime.combine(date.today(),
+                                                                 start_time)).total_seconds()
+
+                if heartBeatDiff > 15:
+                    # disconnect the connection
+                    logs.append(str(datetime.now().time()) + ' Node Dead: ' + str(address))
+
+                    print('Node disconnected')
+
+            packet = create_packet(PacketType.HEARTBEAT_REQ)
+            for connection in connections.values():
+                logs.append(str(datetime.now().time()) + ' Heartbeat Request Sent: ' + str(connection))
+
+                client_socket.sendto(packet, connection)
+
+            time.sleep(5)
+
+class SendHeartbeatResponse(threading.Thread):
+    def __init__(self, threadID, name, address):
+        threading.Thread.__init__(self)
+        self.threadID = threadID
+        self.name = name
+        self.address = address
+
+    def run(self):
+        logs.append(str(datetime.now().time()) + ' Heartbeat Response Sent: ' + str(self.address))
+
+        packet = create_packet(PacketType.HEARTBEAT_RES)
+        client_socket.sendto(packet, self.address)
+
+class SendACKThread(threading.Thread):
+    def __init__(self, threadID, name, address):
+        threading.Thread.__init__(self)
+        self.threadID = threadID
+        self.name = name
+        self.address = address
+
+    def run(self):
+        packet = create_packet(PacketType.ACK)
+        client_socket.sendto(packet, self.address)
+        logs.append(str(datetime.now().time()) + ' Sent ACK: ' + str(self.address))
+
+class WaitForACK(threading.Thread):
+    def __init__(self, threadID, name, address, waitTime, resendPacket):
+        threading.Thread.__init__(self)
+        self.threadID = threadID
+        self.name = name
+        self.address = address
+        self.waitTime = waitTime
+        self.resendPacket = resendPacket
+
+    def run(self):
+        time.sleep(self.waitTime)
+        if not self.address in receivedAck or not receivedAck[self.address]:
+            logs.append(str(datetime.now().time()) + ' Resend Packet: ' + str(self.address))
+            client_socket.sendto(self.resendPacket, self.address)
+            receivedAck[self.address] = False
+            waitForAckThread = WaitForACK(0, 'Wait For Ack', self.address, self.waitTime, self.resendPacket)
+            waitForAckThread.start()
 
 
 class ConnectionResponseThread(threading.Thread):
@@ -209,6 +294,8 @@ class SendMessageThread(threading.Thread):
         packet = create_packet(PacketType.MESSAGE_TEXT, self.message)
         for address in self.addresses:
             client_socket.sendto(packet, address)
+            waitForAckThread = WaitForACK(0, 'Wait For Ack', address, (rTTTimes[address] * 2), packet)
+            waitForAckThread.start()
             logs.append(str(datetime.now().time()) + ' Message Sent: ' + str(address))
 
 
@@ -225,6 +312,8 @@ class SendFileThread(threading.Thread):
         packet = create_file_packet(self.file)
         for address in self.addresses:
             client_socket.sendto(packet, address)
+            waitForAckThread = WaitForACK(0, 'Wait For Ack', address, (rTTTimes[address] * 2), packet)
+            waitForAckThread.start()
             logs.append(str(datetime.now().time()) + ' File Sent: ' + str(address))
 
 
@@ -325,6 +414,9 @@ def connect_to_poc(PoC_address, PoC_port):
                 connections[new_connection] = received_address
             else:
                 connections[new_connection] = tuple(new_connections[new_connection])
+
+        for connection in connections.values():
+            heartBeatTimes[connection] = datetime.now().time()
     client_socket.settimeout(None)
     return 1
     #--------------------
@@ -399,6 +491,10 @@ def main():
     #we now have to be able to send/receive messages, do RTT measurements,
     #Heartbeat stuff, and handle commands by the user
     #---------------------------------------------------------------------
+
+    heartBeatThread = HeartbeatThread(12, "HeartBeat Thread")
+    heartBeatThread.setDaemon(True)
+    heartBeatThread.start()
     command = input("Star-Node Command: ")
 
     while not command == 'disconnect':
