@@ -286,7 +286,7 @@ class ReceivingThread(threading.Thread):
                 name = packet['message']
 
                 sent_connections = copy.deepcopy(connections)
-                sent_connections[my_name] = None
+                sent_connections[my_name] = my_address
 
                 connectionResponseThread = ConnectionResponseThread(0, 'Connection Response', recieved_address, sent_connections)
                 connectionResponseThread.setDaemon(True)
@@ -359,7 +359,7 @@ class HeartbeatThread(threading.Thread):
                 client_socket.sendto(packet, connection)
 
             connectionLock.release()
-            time.sleep(3)
+            time.sleep(1)
 
 class SendHeartbeatResponse(threading.Thread):
     def __init__(self, threadID, name, address):
@@ -517,11 +517,7 @@ class SumThread(threading.Thread):
                 packet = create_packet(PacketType.SUM, message)
                 client_socket.sendto(packet, addr)
             connectionLock.release()
-        # if hubNode is not None and summedValue < connectedSums[hubNode]:
-        #     hubNode = my_address
-        #     logs.append(str(datetime.now().time()) + ' Hub Node Updated: ' + str(hubNode))
 
-        #send summed value to all the connected nodes
 
 
 class RTTThread(threading.Thread):
@@ -576,10 +572,7 @@ def connect_to_poc(PoC_address, PoC_port):
         connectionLock.acquire()
         for new_connection in new_connections:
             logs.append(str(datetime.now().time()) + 'Connected to New Star Node: ' + str(new_connection) + ' ' + str(new_connections[new_connection]))
-            if new_connections[new_connection] is None:
-                connections[new_connection] = received_address
-            else:
-                connections[new_connection] = tuple(new_connections[new_connection])
+            connections[new_connection] = tuple(new_connections[new_connection])
         heartBeatTimesLock.acquire()
         for connection in connections.values():
             heartBeatTimes[connection] = datetime.now().time()
