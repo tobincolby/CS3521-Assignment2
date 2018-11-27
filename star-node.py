@@ -19,9 +19,11 @@ class PacketType:
     DISCONNECT = 10
 
 
-def create_packet(packet_type, message=None):
+def create_packet(packet_type, message=None, sequenceNumber=None):
     packet = dict()
     packet['packetType'] = packet_type
+    if not sequenceNumber is None:
+        packet['sequence'] = sequenceNumber
     if not message is None:
         packet['message'] = message
         packet['messageLength'] = len(message)
@@ -33,9 +35,11 @@ def create_packet(packet_type, message=None):
 
 #made a seperate function to create file packets
 #because json would not serialize them
-def create_file_packet(file):
+def create_file_packet(file, sequenceNumber=None):
     packet = dict()
     packet['packetType'] = PacketType.MESSAGE_FILE
+    if not sequenceNumber is None:
+        packet['sequence'] = sequenceNumber
     packet['message'] = file
     #packet['messageLength'] = len(message)
     packet_data = pickle.dumps(packet)
@@ -329,9 +333,10 @@ class SendMessageThread(threading.Thread):
         self.message = message
 
     def run(self):
-        global logs
+        global logs, receivedAck
         packet = create_packet(PacketType.MESSAGE_TEXT, self.message)
         for address in self.addresses:
+            receivedAck[address] = False
             client_socket.sendto(packet, address)
             waitForAckThread = WaitForACK(0, 'Wait For Ack', address, (rTTTimes[address]), packet)
             waitForAckThread.start()
@@ -347,9 +352,10 @@ class SendFileThread(threading.Thread):
         self.file = file
 
     def run(self):
-        global logs
+        global logs, receivedAck
         packet = create_file_packet(self.file)
         for address in self.addresses:
+            receivedAck[address] = False
             client_socket.sendto(packet, address)
             waitForAckThread = WaitForACK(0, 'Wait For Ack', address, (rTTTimes[address] * 2), packet)
             waitForAckThread.start()
