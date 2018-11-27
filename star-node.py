@@ -57,6 +57,9 @@ connectedSums = dict() # Key: (IP, Port) Value: Sum
 receivedAck = dict() # Key: (IP, Port) Value: Bool value for whether or not ack was received
 heartBeatTimes = dict() # Key: (IP, Port) Value: last time a heartbeat response was received
 
+sendingSequenceNumber = dict() #Key : (IP, Port) Value: Sequence number that is being sent
+recievedSequenceNumber = dict() #Key: (IP, Port) Value: Sequence number that was last received
+
 hubNode = None
 client_socket = None
 logs = list()
@@ -96,7 +99,7 @@ class ReceivingThread(threading.Thread):
         self.name = name
 
     def run(self):
-        global hubNode, connectedSums, connections, rTTTimes, startTimes, receivedAck, heartBeatTimes, logs
+        global hubNode, connectedSums, connections, rTTTimes, startTimes, receivedAck, heartBeatTimes, logs, sendingSequenceNumber, recievedSequenceNumber
         rttReceived = 0
 
         while True:
@@ -168,40 +171,51 @@ class ReceivingThread(threading.Thread):
 
             elif packet_type == PacketType.MESSAGE_TEXT:
                 logs.append(str(datetime.now().time()) + ' Message Recieved: ' + str(recieved_address) + ' : ' + str(packet['message']))
-                sendACKThread = SendACKThread(0, 'Send ACK Thread', recieved_address)
+                sendACKThread = SendACKThread(0, 'Send ACK Thread', recieved_address, packet['sequence'])
                 sendACKThread.start()
-                print("new message received from " + str(recieved_address) + ": "+ str(packet['message']))
-                if hubNode == my_address:
-                    addresses = []
-                    for connection in connections:
-                        if not connections[connection] == recieved_address:
-                            addresses.append(connections[connection])
-                    logs.append(str(datetime.now().time()) + ' Message Forwarded: ' + str(addresses))
-                    sendMessage = SendMessageThread(0, 'SendMessageThread', packet['message'], addresses)
-                    sendMessage.setDaemon(True)
-                    sendMessage.start()
+                if not recieved_address in recievedSequenceNumber or not recievedSequenceNumber[recieved_address] == packet['sequence']:
+                    recievedSequenceNumber[recieved_address] = packet['sequence']
+                    print("new message received from " + str(recieved_address) + ": "+ str(packet['message']))
+                    if hubNode == my_address:
+                        addresses = []
+                        for connection in connections:
+                            if not connections[connection] == recieved_address:
+                                addresses.append(connections[connection])
+                        logs.append(str(datetime.now().time()) + ' Message Forwarded: ' + str(addresses))
+                        sendMessage = SendMessageThread(0, 'SendMessageThread', packet['message'], addresses)
+                        sendMessage.setDaemon(True)
+                        sendMessage.start()
+                else:
+                    logs.append(
+                        str(datetime.now().time()) + ' DUPLICATE PACKET: ' + str(recieved_address) + ' : ' + str(
+                            packet['message']))
             elif packet_type == PacketType.MESSAGE_FILE:
                 logs.append(str(datetime.now().time()) + ' File Recieved: ' + str(recieved_address))
-                sendACKThread = SendACKThread(0, 'Send ACK Thread', recieved_address)
+                sendACKThread = SendACKThread(0, 'Send ACK Thread', recieved_address, packet['sequence'])
                 sendACKThread.start()
-                print("new file received from " + str(recieved_address))#don't want to print the whole file #+ ": "+ str(packet['message']))
+                if not recieved_address in recievedSequenceNumber or not recievedSequenceNumber[recieved_address] == packet['sequence']:
+                    recievedSequenceNumber[recieved_address] = packet['sequence']
+                    print("new file received from " + str(recieved_address))#don't want to print the whole file #+ ": "+ str(packet['message']))
 
-                file_bytes = bytes(packet['message'])
-                new_file = open(str(datetime.now().time()), 'w+b')
-                new_file.write(file_bytes)
-                new_file.close()
+                    file_bytes = bytes(packet['message'])
+                    new_file = open(str(datetime.now().time()), 'w+b')
+                    new_file.write(file_bytes)
+                    new_file.close()
 
-                if hubNode == my_address:
-                    addresses = []
-                    for connection in connections:
-                        if not connections[connection] == recieved_address:
-                            addresses.append(connections[connection])
-                    logs.append(str(datetime.now().time()) + ' Message Forwarded: ' + str(addresses))
+                    if hubNode == my_address:
+                        addresses = []
+                        for connection in connections:
+                            if not connections[connection] == recieved_address:
+                                addresses.append(connections[connection])
+                        logs.append(str(datetime.now().time()) + ' Message Forwarded: ' + str(addresses))
 
-                    sendFile = SendFileThread(0, 'SendFileThread', packet['message'], addresses)
-                    sendFile.setDaemon(True)
-                    sendFile.start()
-
+                        sendFile = SendFileThread(0, 'SendFileThread', packet['message'], addresses)
+                        sendFile.setDaemon(True)
+                        sendFile.start()
+                else:
+                    logs.append(
+                        str(datetime.now().time()) + ' DUPLICATE PACKET: ' + str(recieved_address) + ' : ' + str(
+                            packet['message']))
             elif packet_type == PacketType.CONNECT_REQ:
 
                 name = packet['message']
@@ -213,6 +227,7 @@ class ReceivingThread(threading.Thread):
                 connectionResponseThread.setDaemon(True)
                 connectionResponseThread.start()
                 connections[name] = recieved_address
+                sendingSequenceNumber[recieved_address] = 0
                 heartBeatTimes[recieved_address] = datetime.now().time()
                 logs.append(
                     str(datetime.now().time()) + 'Connected to New Star Node: ' + str(name) + ' ' + str(
@@ -220,7 +235,9 @@ class ReceivingThread(threading.Thread):
             elif packet_type == PacketType.ACK:
                 logs.append(str(datetime.now().time()) + ' ACK Received: ' + str(recieved_address))
 
-                receivedAck[recieved_address] = True
+                sequence_number = packet['sequence']
+                if sequence_number == sendingSequenceNumber[recieved_address]:
+                    receivedAck[recieved_address] = True
 
             elif packet_type == PacketType.HEARTBEAT_REQ:
                 logs.append(str(datetime.now().time()) + ' Heartbeat Request Received: ' + str(recieved_address))
@@ -283,14 +300,16 @@ class SendHeartbeatResponse(threading.Thread):
         client_socket.sendto(packet, self.address)
 
 class SendACKThread(threading.Thread):
-    def __init__(self, threadID, name, address):
+    def __init__(self, threadID, name, address, sequenceNumber):
         threading.Thread.__init__(self)
         self.threadID = threadID
         self.name = name
         self.address = address
+        self.sequenceNumber = sequenceNumber
 
     def run(self):
-        packet = create_packet(PacketType.ACK)
+        global logs
+        packet = create_packet(PacketType.ACK, sequenceNumber=self.sequenceNumber)
         client_socket.sendto(packet, self.address)
         logs.append(str(datetime.now().time()) + ' Sent ACK: ' + str(self.address))
 
@@ -333,10 +352,10 @@ class SendMessageThread(threading.Thread):
         self.message = message
 
     def run(self):
-        global logs, receivedAck
-        packet = create_packet(PacketType.MESSAGE_TEXT, self.message)
+        global logs, receivedAck, sendingSequenceNumber
         for address in self.addresses:
             receivedAck[address] = False
+            packet = create_packet(PacketType.MESSAGE_TEXT, self.message, sequenceNumber=sendingSequenceNumber[address])
             client_socket.sendto(packet, address)
             waitForAckThread = WaitForACK(0, 'Wait For Ack', address, (rTTTimes[address]), packet)
             waitForAckThread.start()
@@ -352,12 +371,13 @@ class SendFileThread(threading.Thread):
         self.file = file
 
     def run(self):
-        global logs, receivedAck
-        packet = create_file_packet(self.file)
+        global logs, receivedAck, sendingSequenceNumber
         for address in self.addresses:
             receivedAck[address] = False
+            sendingSequenceNumber[address] = (sendingSequenceNumber[address] + 1) % 2
+            packet = create_file_packet(self.file, sequenceNumber=sendingSequenceNumber[address])
             client_socket.sendto(packet, address)
-            waitForAckThread = WaitForACK(0, 'Wait For Ack', address, (rTTTimes[address] * 2), packet)
+            waitForAckThread = WaitForACK(0, 'Wait For Ack', address, (rTTTimes[address]), packet)
             waitForAckThread.start()
             logs.append(str(datetime.now().time()) + ' File Sent: ' + str(address))
 
