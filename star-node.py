@@ -16,6 +16,7 @@ class PacketType:
     MESSAGE_TEXT = 7
     MESSAGE_FILE = 8
     ACK = 9
+    DISCONNECT = 10
 
 
 def create_packet(packet_type, message=None):
@@ -58,6 +59,31 @@ logs = list()
 my_address = (0,0)
 
 
+def disconnect_address(address):
+    global hubNode, connectedSums, connections, rTTTimes, startTimes, receivedAck, heartBeatTimes, logs
+    for x in connections:
+        if connections[x] == address:
+            del connections[x]
+            break
+
+    del rTTTimes[address]
+    del startTimes[address]
+    del connectedSums[address]
+    del receivedAck[address]
+    del heartBeatTimes[address]
+
+    if hubNode == address:
+        # recalculate hub node
+        minAddress = None
+        minSum = sys.maxsize
+        for connectedSum in connectedSums:
+            if connectedSums[connectedSum] < minSum:
+                minSum = connectedSums[connectedSum]
+                minAddress = connectedSum
+
+        hubNode = minAddress
+        logs.append(str(datetime.now().time()) + ' Hub Node Updated: ' + str(hubNode))
+
 
 class ReceivingThread(threading.Thread):
     def __init__(self, threadID, name):
@@ -66,7 +92,7 @@ class ReceivingThread(threading.Thread):
         self.name = name
 
     def run(self):
-        global connections, rTTTimes, connectedSums, hubNode, startTimes, logs
+        global hubNode, connectedSums, connections, rTTTimes, startTimes, receivedAck, heartBeatTimes, logs
         rttReceived = 0
 
         while True:
@@ -155,6 +181,12 @@ class ReceivingThread(threading.Thread):
                 sendACKThread = SendACKThread(0, 'Send ACK Thread', recieved_address)
                 sendACKThread.start()
                 print("new file received from " + str(recieved_address))#don't want to print the whole file #+ ": "+ str(packet['message']))
+
+                file_bytes = bytes(packet['message'])
+                new_file = open(str(datetime.now().time()), 'w+b')
+                new_file.write(file_bytes)
+                new_file.close()
+
                 if hubNode == my_address:
                     addresses = []
                     for connection in connections:
@@ -197,6 +229,11 @@ class ReceivingThread(threading.Thread):
 
                 heartBeatTimes[recieved_address] = datetime.now().time()
 
+            elif packet_type == PacketType.DISCONNECT:
+                logs.append(str(datetime.now().time()) + ' DISCONNECT Packet Received: ' + str(recieved_address))
+                disconnect_address(recieved_address)
+                #disconnect the node
+
 class HeartbeatThread(threading.Thread):
     def __init__(self, threadID, name):
         threading.Thread.__init__(self)
@@ -204,6 +241,7 @@ class HeartbeatThread(threading.Thread):
         self.name = name
 
     def run(self):
+        global connections, heartBeatTimes, logs
         while True:
             for connection in connections:
                 address = connections[connection]
@@ -217,6 +255,7 @@ class HeartbeatThread(threading.Thread):
                     logs.append(str(datetime.now().time()) + ' Node Dead: ' + str(address))
 
                     print('Node disconnected')
+                    disconnect_address(address)
 
             packet = create_packet(PacketType.HEARTBEAT_REQ)
             for connection in connections.values():
@@ -294,7 +333,7 @@ class SendMessageThread(threading.Thread):
         packet = create_packet(PacketType.MESSAGE_TEXT, self.message)
         for address in self.addresses:
             client_socket.sendto(packet, address)
-            waitForAckThread = WaitForACK(0, 'Wait For Ack', address, (rTTTimes[address] * 2), packet)
+            waitForAckThread = WaitForACK(0, 'Wait For Ack', address, (rTTTimes[address]), packet)
             waitForAckThread.start()
             logs.append(str(datetime.now().time()) + ' Message Sent: ' + str(address))
 
@@ -539,6 +578,10 @@ def main():
         command = input("Star-Node Command: ")
 
     print("disconnecting")
+    disconnect_packet = create_packet(PacketType.DISCONNECT)
+    for connection in connections.values():
+        client_socket.sendto(disconnect_packet, connection)
+    client_socket.close()
     sys.exit()
     #TODO handle the disconnect command
 
