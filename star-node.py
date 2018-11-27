@@ -51,14 +51,22 @@ pocAddress = ''
 pocPort = 0
 maxConnections = 0
 connections = dict() # Key: Server Name, Value: (IP, Port)
+connectionLock = threading.Lock()
 rTTTimes = dict() # Key: (IP, Port) value: RTT
+rTTTimesLock = threading.Lock()
 startTimes = dict() # Key: (IP, Port) value: startTime for RTT
+startTimesLock = threading.Lock()
 connectedSums = dict() # Key: (IP, Port) Value: Sum
+connectedSumsLock = threading.Lock()
 receivedAck = dict() # Key: (IP, Port) Value: Bool value for whether or not ack was received
+receivedAckLock = threading.Lock()
 heartBeatTimes = dict() # Key: (IP, Port) Value: last time a heartbeat response was received
+heartBeatTimesLock = threading.Lock()
 
 sendingSequenceNumber = dict() #Key : (IP, Port) Value: Sequence number that is being sent
+sendingSequenceNumberLock = threading.Lock()
 recievedSequenceNumber = dict() #Key: (IP, Port) Value: Sequence number that was last received
+recievedSequenceNumberLock = threading.Lock()
 
 hubNode = None
 client_socket = None
@@ -72,12 +80,30 @@ def disconnect_address(address):
         if connections[x] == address:
             del connections[x]
             break
+    if (address in rTTTimes):
+        del rTTTimes[address]
 
-    del rTTTimes[address]
-    del startTimes[address]
-    del connectedSums[address]
-    del receivedAck[address]
-    del heartBeatTimes[address]
+    if (address in startTimes):
+        del startTimes[address]
+
+    if (address in connectedSums):
+        del connectedSums[address]
+
+    if (address in receivedAck):
+        del receivedAck[address]
+
+    if (address in heartBeatTimes):
+        del heartBeatTimes[address]
+
+    if (address in sendingSequenceNumber):
+        del sendingSequenceNumber[address]
+
+    if (address in recievedSequenceNumber):
+        del recievedSequenceNumber[address]
+
+
+    if (len(connections) < 2):
+        hubNode = None
 
     if hubNode == address:
         # recalculate hub node
@@ -116,29 +142,33 @@ class ReceivingThread(threading.Thread):
             if packet_type == PacketType.SUM:
                 message = packet['message']
                 sent_sum = float(message)
+                connectedSumsLock.acquire()
                 connectedSums[recieved_address] = sent_sum
+                connectedSumsLock.release()
                 logs.append(str(datetime.now().time()) + ' SUM Value Recieved: ' + str(sent_sum) + ' ' + str(recieved_address))
 
                 if len(connectedSums) == len(connections) + 1 and len(connections) > 1:
                     if hubNode is None:
                         minAddress = None
                         minSum = sys.maxsize
+                        connectedSumsLock.acquire()
                         for connectedSum in connectedSums:
                             if connectedSums[connectedSum] < minSum:
                                 minSum = connectedSums[connectedSum]
                                 minAddress = connectedSum
-
+                        connectedSumsLock.release()
                         hubNode = minAddress
                         logs.append(str(datetime.now().time()) + ' Hub Node Updated: ' + str(hubNode))
 
                     else:
                         minAddress = None
                         minSum = sys.maxsize
+                        connectedSumsLock.acquire()
                         for connectedSum in connectedSums:
                             if connectedSums[connectedSum] < minSum:
                                 minSum = connectedSums[connectedSum]
                                 minAddress = connectedSum
-
+                        connectedSumsLock.release()
                         if not (minAddress == hubNode):
 
                             if connectedSums[hubNode] * .9 > minSum:
@@ -154,7 +184,9 @@ class ReceivingThread(threading.Thread):
                 start_time = startTimes[recieved_address]
                 end_time = datetime.now().time()
                 rtt = (datetime.combine(date.today(), end_time) - datetime.combine(date.today(), start_time)).total_seconds() * 1000
+                rTTTimesLock.acquire()
                 rTTTimes[recieved_address] = rtt
+                rTTTimesLock.release()
                 rttReceived += 1
 
                 if (len(connections) == len(rTTTimes) and rttReceived == len(connections)):
@@ -174,13 +206,17 @@ class ReceivingThread(threading.Thread):
                 sendACKThread = SendACKThread(0, 'Send ACK Thread', recieved_address, packet['sequence'])
                 sendACKThread.start()
                 if not recieved_address in recievedSequenceNumber or not recievedSequenceNumber[recieved_address] == packet['sequence']:
+                    recievedSequenceNumberLock.acquire()
                     recievedSequenceNumber[recieved_address] = packet['sequence']
+                    recievedSequenceNumberLock.release()
                     print("new message received from " + str(recieved_address) + ": "+ str(packet['message']))
                     if hubNode == my_address:
                         addresses = []
+                        connectionLock.acquire()
                         for connection in connections:
                             if not connections[connection] == recieved_address:
                                 addresses.append(connections[connection])
+                        connectionLock.release()
                         logs.append(str(datetime.now().time()) + ' Message Forwarded: ' + str(addresses))
                         sendMessage = SendMessageThread(0, 'SendMessageThread', packet['message'], addresses)
                         sendMessage.setDaemon(True)
@@ -194,7 +230,9 @@ class ReceivingThread(threading.Thread):
                 sendACKThread = SendACKThread(0, 'Send ACK Thread', recieved_address, packet['sequence'])
                 sendACKThread.start()
                 if not recieved_address in recievedSequenceNumber or not recievedSequenceNumber[recieved_address] == packet['sequence']:
+                    recievedSequenceNumberLock.acquire()
                     recievedSequenceNumber[recieved_address] = packet['sequence']
+                    recievedSequenceNumberLock.release()
                     print("new file received from " + str(recieved_address))#don't want to print the whole file #+ ": "+ str(packet['message']))
 
                     file_bytes = bytes(packet['message'])
@@ -204,9 +242,11 @@ class ReceivingThread(threading.Thread):
 
                     if hubNode == my_address:
                         addresses = []
+                        connectionLock.acquire()
                         for connection in connections:
                             if not connections[connection] == recieved_address:
                                 addresses.append(connections[connection])
+                        connectionLock.release()
                         logs.append(str(datetime.now().time()) + ' Message Forwarded: ' + str(addresses))
 
                         sendFile = SendFileThread(0, 'SendFileThread', packet['message'], addresses)
@@ -226,9 +266,15 @@ class ReceivingThread(threading.Thread):
                 connectionResponseThread = ConnectionResponseThread(0, 'Connection Response', recieved_address, sent_connections)
                 connectionResponseThread.setDaemon(True)
                 connectionResponseThread.start()
+                connectionLock.acquire()
                 connections[name] = recieved_address
+                connectionLock.release()
+                sendingSequenceNumberLock.acquire()
                 sendingSequenceNumber[recieved_address] = 0
+                sendingSequenceNumberLock.release()
+                heartBeatTimesLock.acquire()
                 heartBeatTimes[recieved_address] = datetime.now().time()
+                heartBeatTimesLock.release()
                 logs.append(
                     str(datetime.now().time()) + 'Connected to New Star Node: ' + str(name) + ' ' + str(
                         recieved_address))
@@ -237,8 +283,9 @@ class ReceivingThread(threading.Thread):
 
                 sequence_number = packet['sequence']
                 if sequence_number == sendingSequenceNumber[recieved_address]:
+                    receivedAckLock.acquire()
                     receivedAck[recieved_address] = True
-
+                    receivedAckLock.release()
             elif packet_type == PacketType.HEARTBEAT_REQ:
                 logs.append(str(datetime.now().time()) + ' Heartbeat Request Received: ' + str(recieved_address))
 
@@ -247,8 +294,9 @@ class ReceivingThread(threading.Thread):
 
             elif packet_type == PacketType.HEARTBEAT_RES:
                 logs.append(str(datetime.now().time()) + ' Heartbeat Response Received: ' + str(recieved_address))
-
+                heartBeatTimesLock.acquire()
                 heartBeatTimes[recieved_address] = datetime.now().time()
+                heartBeatTimesLock.release()
 
             elif packet_type == PacketType.DISCONNECT:
                 logs.append(str(datetime.now().time()) + ' DISCONNECT Packet Received: ' + str(recieved_address))
@@ -264,12 +312,14 @@ class HeartbeatThread(threading.Thread):
     def run(self):
         global connections, heartBeatTimes, logs
         while True:
+            connectionLock.acquire()
             for connection in connections:
                 address = connections[connection]
                 start_time = heartBeatTimes[address]
                 end_time = datetime.now().time()
                 heartBeatDiff = (datetime.combine(date.today(), end_time) - datetime.combine(date.today(),
                                                                  start_time)).total_seconds()
+                print (heartBeatDiff)
 
                 if heartBeatDiff > 15:
                     # disconnect the connection
@@ -284,7 +334,8 @@ class HeartbeatThread(threading.Thread):
 
                 client_socket.sendto(packet, connection)
 
-            time.sleep(5)
+            connectionLock.release()
+            time.sleep(3)
 
 class SendHeartbeatResponse(threading.Thread):
     def __init__(self, threadID, name, address):
@@ -327,7 +378,9 @@ class WaitForACK(threading.Thread):
         if not self.address in receivedAck or not receivedAck[self.address]:
             logs.append(str(datetime.now().time()) + ' Resend Packet: ' + str(self.address))
             client_socket.sendto(self.resendPacket, self.address)
+            receivedAckLock.acquire()
             receivedAck[self.address] = False
+            receivedAckLock.release()
             waitForAckThread = WaitForACK(0, 'Wait For Ack', self.address, self.waitTime, self.resendPacket)
             waitForAckThread.start()
 
@@ -354,7 +407,9 @@ class SendMessageThread(threading.Thread):
     def run(self):
         global logs, receivedAck, sendingSequenceNumber
         for address in self.addresses:
+            receivedAckLock.acquire()
             receivedAck[address] = False
+            receivedAckLock.release()
             packet = create_packet(PacketType.MESSAGE_TEXT, self.message, sequenceNumber=sendingSequenceNumber[address])
             client_socket.sendto(packet, address)
             waitForAckThread = WaitForACK(0, 'Wait For Ack', address, (rTTTimes[address]), packet)
@@ -373,8 +428,12 @@ class SendFileThread(threading.Thread):
     def run(self):
         global logs, receivedAck, sendingSequenceNumber
         for address in self.addresses:
+            receivedAckLock.acquire()
             receivedAck[address] = False
+            receivedAckLock.release()
+            sendingSequenceNumberLock.acquire()
             sendingSequenceNumber[address] = (sendingSequenceNumber[address] + 1) % 2
+            sendingSequenceNumberLock.release()
             packet = create_file_packet(self.file, sequenceNumber=sendingSequenceNumber[address])
             client_socket.sendto(packet, address)
             waitForAckThread = WaitForACK(0, 'Wait For Ack', address, (rTTTimes[address]), packet)
@@ -407,19 +466,25 @@ class SumThread(threading.Thread):
         global connections, rTTTimes, connectedSums, hubNode, logs
 
         summedValue = 0
+        rTTTimesLock.acquire()
         for rtt in rTTTimes:
             value = rTTTimes[rtt]
             summedValue += value
+        rTTTimesLock.release()
         logs.append(str(datetime.now().time()) + ' SUM Calculated: ' + str(summedValue))
 
 
         if not (summedValue == 0):
+            connectedSumsLock.acquire()
             connectedSums[my_address] = summedValue
+            connectedSumsLock.release()
+            connectionLock.acquire()
             for connection in connections:
                 addr = connections[connection]
                 message = str(summedValue)
                 packet = create_packet(PacketType.SUM, message)
                 client_socket.sendto(packet, addr)
+            connectionLock.release()
         # if hubNode is not None and summedValue < connectedSums[hubNode]:
         #     hubNode = my_address
         #     logs.append(str(datetime.now().time()) + ' Hub Node Updated: ' + str(hubNode))
@@ -436,13 +501,16 @@ class RTTThread(threading.Thread):
     def run(self):
         global connections, startTimes, logs
         while True:
+            connectionLock.acquire()
             for connection in connections:
                 addr = connections[connection]
+                startTimesLock.acquire()
                 startTimes[addr] = datetime.now().time()
+                startTimesLock.release()
                 packet = create_packet(PacketType.RTT_REQ)
                 client_socket.sendto(packet, addr)
                 logs.append(str(datetime.now().time()) + ' RTT Request Sent: ' + str(addr))
-
+            connectionLock.release()
             time.sleep(5)
 
 def connect_to_poc(PoC_address, PoC_port):
@@ -473,6 +541,7 @@ def connect_to_poc(PoC_address, PoC_port):
     type = packet["packetType"]
     if type == PacketType.CONNECT_RES:
         new_connections = packet["message"]
+        connectionLock.acquire()
         for new_connection in new_connections:
             logs.append(str(datetime.now().time()) + 'Connected to New Star Node: ' + str(new_connection) + ' ' + str(new_connections[new_connection]))
             if new_connections[new_connection] is None:
@@ -481,7 +550,10 @@ def connect_to_poc(PoC_address, PoC_port):
                 connections[new_connection] = tuple(new_connections[new_connection])
 
         for connection in connections.values():
+            heartBeatTimesLock.acquire()
             heartBeatTimes[connection] = datetime.now().time()
+    connectionLock.release()
+    heartBeatTimesLock.release()
     client_socket.settimeout(None)
     return 1
     #--------------------
@@ -495,13 +567,14 @@ def connect_to_network():
     #------------------------------
     #TODO: make sure this is correct
     #------------------------------
+    connectionLock.acquire()
     for connection in connections:
         connect_req_packet = create_packet(PacketType.CONNECT_REQ, message=my_name)
         addr = connections[connection]
         client_socket.sendto(connect_req_packet, addr)
         #dont really need to do anything with the response just make sure that
         #there actually was one
-
+    connectionLock.release()
 def main():
     #remember to uncomment the my_address
     #command line looks like this: star-node <name> <local-port> <PoC-address> <PoC-port> <N>
